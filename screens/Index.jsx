@@ -1,5 +1,4 @@
-import React, { useState } from "react";
-import axios from "axios";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Copy,
   Scissors,
@@ -9,6 +8,7 @@ import {
   XCircle,
   Loader2,
   AlertCircle,
+  Clock,
 } from "lucide-react";
 
 const Index = () => {
@@ -16,6 +16,50 @@ const Index = () => {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [cooldownTime, setCooldownTime] = useState(0);
+  const [isOnCooldown, setIsOnCooldown] = useState(false);
+  
+  const cooldownInterval = useRef(null);
+
+  // Cooldown timer effect
+  useEffect(() => {
+    if (cooldownTime > 0) {
+      setIsOnCooldown(true);
+      cooldownInterval.current = setInterval(() => {
+        setCooldownTime((prev) => {
+          if (prev <= 1) {
+            setIsOnCooldown(false);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      if (cooldownInterval.current) {
+        clearInterval(cooldownInterval.current);
+        cooldownInterval.current = null;
+      }
+      setIsOnCooldown(false);
+    }
+
+    return () => {
+      if (cooldownInterval.current) {
+        clearInterval(cooldownInterval.current);
+      }
+    };
+  }, [cooldownTime]);
+
+  // Start cooldown timer
+  const startCooldown = () => {
+    setCooldownTime(60); // 60 seconds = 1 minute
+  };
+
+  // Format countdown time as MM:SS
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   // Text management functions
   const handleCopy = () => {
@@ -42,10 +86,15 @@ const Index = () => {
     setError("");
   };
 
-  // Validation function using axios
+  // Validation function using fetch instead of axios
   const validateNews = async () => {
     if (!prompt.trim()) {
       setError("Please enter some text to validate");
+      return;
+    }
+
+    if (isOnCooldown) {
+      setError(`Please wait ${formatTime(cooldownTime)} before making another request`);
       return;
     }
 
@@ -55,22 +104,23 @@ const Index = () => {
 
     try {
       // Replace with your actual backend endpoint
-      const response = await axios.post(
-        `${import.meta.env.VITE_HOST_ENDPOINT}`,
-        {
-          text: prompt,
+      const response = await fetch(`${import.meta.env.VITE_HOST_ENDPOINT}`, {
+        method: 'POST',
+        headers: {
+          "Content-Type": "application/json",
         },
-        {
-          headers: {
-            "Content-Type": "application/json",
-          },
-          timeout: 120000, // 120 seconds timeout
-        }
-      );
+        body: JSON.stringify({ text: prompt }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
+      const data = await response.json();
 
       // Parse the response structure from your backend
       let parsedResult = {
-        message: response.data.message || "",
+        message: data.message || "",
         rawData: null,
         parsedData: null,
         isTrue: false,
@@ -78,16 +128,16 @@ const Index = () => {
       };
 
       // Handle the data field - it can be null, string, or object
-      if (response.data.data) {
+      if (data.data) {
         try {
           // Try to parse if it's a JSON string
-          if (typeof response.data.data === "string") {
-            parsedResult.parsedData = JSON.parse(response.data.data);
-            parsedResult.rawData = response.data.data;
+          if (typeof data.data === "string") {
+            parsedResult.parsedData = JSON.parse(data.data);
+            parsedResult.rawData = data.data;
           } else {
             // It's already an object
-            parsedResult.parsedData = response.data.data;
-            parsedResult.rawData = JSON.stringify(response.data.data, null, 2);
+            parsedResult.parsedData = data.data;
+            parsedResult.rawData = JSON.stringify(data.data, null, 2);
           }
 
           // Determine if the claim is true or false
@@ -100,7 +150,7 @@ const Index = () => {
           parsedResult.hasValidData = true;
         } catch (parseError) {
           // If parsing fails, treat as raw string
-          parsedResult.rawData = response.data.data;
+          parsedResult.rawData = data.data;
           parsedResult.hasValidData = false;
         }
       } else {
@@ -110,28 +160,23 @@ const Index = () => {
       }
 
       setResult(parsedResult);
+      
+      // Start cooldown timer after successful request
+      startCooldown();
+      
     } catch (err) {
-      if (err.response) {
-        // Server responded with error status
-        setError(
-          `Server error: ${err.response.status} - ${
-            err.response.data?.message || "Unknown error"
-          }`
-        );
-      } else if (err.request) {
-        // Request was made but no response
-        setError("Network error: Please check your connection and try again.");
-      } else {
-        // Something else happened
-        setError(err.message || "Failed to validate news. Please try again.");
-      }
+      setError(err.message || "Failed to validate news. Please try again.");
+      
+      // Start cooldown even on error to prevent spam
+      startCooldown();
+      
     } finally {
       setLoading(false);
     }
   };
 
   const handleKeyPress = (e) => {
-    if (e.key === "Enter" && e.ctrlKey) {
+    if (e.key === "Enter" && e.ctrlKey && !isOnCooldown) {
       validateNews();
     }
   };
@@ -238,6 +283,8 @@ const Index = () => {
     });
   };
 
+  const isButtonDisabled = loading || !prompt.trim() || isOnCooldown;
+
   return (
     <div className="min-h-screen bg-gray-50 py-4 px-2 sm:px-4 lg:px-8">
       <div className="max-w-6xl mx-auto">
@@ -254,6 +301,23 @@ const Index = () => {
           </div>
 
           <div className="px-4 sm:px-6 lg:px-8 py-6">
+            {/* Cooldown Timer Display */}
+            {isOnCooldown && (
+              <div className="mb-6 p-4 bg-orange-50 border border-orange-200 rounded-lg">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-orange-500" />
+                  <div>
+                    <span className="text-orange-700 font-medium text-sm sm:text-base">
+                      Rate limit active
+                    </span>
+                    <p className="text-orange-600 text-sm">
+                      Next request available in: <span className="font-mono font-bold">{formatTime(cooldownTime)}</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Input Section */}
             <div className="mb-6">
               <label
@@ -313,20 +377,29 @@ const Index = () => {
                 <span className="text-xs sm:text-sm text-gray-500">
                   {prompt.length} characters
                   <span className="hidden sm:inline">
-                    {" "}
-                    | Press Ctrl+Enter to validate
+                    {!isOnCooldown && " | Press Ctrl+Enter to validate"}
                   </span>
                 </span>
                 <button
                   onClick={validateNews}
-                  disabled={loading || !prompt.trim()}
-                  className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm sm:text-base"
+                  disabled={isButtonDisabled}
+                  className={`w-full sm:w-auto flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 rounded-lg transition-colors text-sm sm:text-base ${
+                    isButtonDisabled
+                      ? 'bg-gray-400 cursor-not-allowed text-white'
+                      : 'bg-blue-600 hover:bg-blue-700 text-white'
+                  }`}
                 >
                   {loading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span className="hidden xs:inline">Validating...</span>
                       <span className="xs:hidden">...</span>
+                    </>
+                  ) : isOnCooldown ? (
+                    <>
+                      <Clock className="w-4 h-4" />
+                      <span className="hidden xs:inline">Wait {formatTime(cooldownTime)}</span>
+                      <span className="xs:hidden">{formatTime(cooldownTime)}</span>
                     </>
                   ) : (
                     <>
@@ -485,6 +558,12 @@ const Index = () => {
                   <span>
                     Review the AI analysis result with confidence score and
                     explanation
+                  </span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-orange-500 font-bold">•</span>
+                  <span>
+                    Rate limiting: Wait 1 minute between requests to prevent server overload
                   </span>
                 </li>
               </ul>
